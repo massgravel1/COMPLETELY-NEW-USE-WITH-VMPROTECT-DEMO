@@ -21,7 +21,7 @@
 
 #ifdef _MSC_VER
 #define COMMON_CXXFLAGS "-D_CRT_SECURE_NO_WARNINGS", "-DWIN32_LEAN_AND_MEAN", "-DUNICODE", "-nologo", "-EHsc", "-std:c++latest"
-#define RELEASE_CXXFLAGS COMMON_CXXFLAGS, "-DNDEBUG", "-W3", "-O2", "-MT", "-GL", INCLUDE_CXXFLAGS
+#define RELEASE_CXXFLAGS COMMON_CXXFLAGS, "-DNDEBUG", "-W1", "-O2", "-MT", "-GL", INCLUDE_CXXFLAGS
 #define DEBUG_CXXFLAGS COMMON_CXXFLAGS, "-W4", "-Od", "-Z7", "-MTd", "-FS", INCLUDE_CXXFLAGS
 static const char *default_cxx = "cl.exe";
 #else
@@ -38,6 +38,7 @@ static bool *debug = 0;
 static bool *console = 0;
 static bool *run = 0;
 static bool *help = 0;
+static bool *use_direct = 0;
 static const char *cxx = 0;
 static char git_commit_hash[16] = {0};
 
@@ -56,11 +57,12 @@ static bool build_injector(Cmd *cmd, const char *filename)
             cmd_append(cmd, DEBUG_CXXFLAGS);
         cmd_append(cmd, "injector.cpp");
         cmd_append(cmd, "-Idriver");
+        cmd_append(cmd, "driver/driver.cpp");
 #ifdef _MSC_VER
         if (!*debug)
-            cmd_append(cmd, "-link", temp_sprintf("-OUT:%s", filename), "-LTCG");
+            cmd_append(cmd, "-link", temp_sprintf("-OUT:%s", filename), "-LTCG", "advapi32.lib");
         else
-            cmd_append(cmd, "-link", temp_sprintf("-OUT:%s", filename), "-DEBUG");
+            cmd_append(cmd, "-link", temp_sprintf("-OUT:%s", filename), "-DEBUG", "advapi32.lib");
 #else
         UNREACHABLE("build_injector: Not Implemented");
 #endif // _MSC_VER
@@ -148,8 +150,34 @@ static bool build_ui_demo(Cmd *cmd)
     return cmd_run_sync_and_reset(cmd);
 }
 
+static bool run_direct_build()
+{
+    nob_log(INFO, "Running direct build commands...");
+    Cmd cmd = {0};
+    
+    // Build SSSISANIGGER.dll
+    cmd_append(&cmd, cxx);
+    cmd_append(&cmd, "-D_CRT_SECURE_NO_WARNINGS", "-DWIN32_LEAN_AND_MEAN", "-DUNICODE", "-nologo", "-EHsc", "-std:c++latest", "-DNDEBUG", "-W1", "-O2", "-MT", "-GL", "-Iinclude", "-Ivendor", "-Ivendor/imgui", "-Ivendor/imgui/legacy");
+    cmd_append(&cmd, "SSSISANIGGER/*.cpp", "SSSISANIGGER/legacy/*.cpp", "SSSISANIGGER/legacy/features/*.cpp", "vendor/imgui/*.cpp", "vendor/imgui/legacy/*.cpp");
+    cmd_append(&cmd, "-link", "-DLL", "-OUT:SSSISANIGGER.dll", "-LTCG", "-MACHINE:x86");
+    bool dll_result = cmd_run_sync_and_reset(&cmd);
+    
+    // Build SSSISANIGGER.exe (injector)
+    cmd_append(&cmd, cxx);
+    cmd_append(&cmd, "-D_CRT_SECURE_NO_WARNINGS", "-DWIN32_LEAN_AND_MEAN", "-DUNICODE", "-nologo", "-EHsc", "-std:c++latest", "-DNDEBUG", "-W1", "-O2", "-MT", "-GL", "-Iinclude", "-Ivendor", "-Ivendor/imgui", "-Idriver");
+    cmd_append(&cmd, "injector.cpp", "driver/driver.cpp");
+    cmd_append(&cmd, "-link", "-OUT:SSSISANIGGER.exe", "-LTCG", "advapi32.lib");
+    bool exe_result = cmd_run_sync_and_reset(&cmd);
+    
+    return dll_result && exe_result;
+}
+
 static bool build()
 {
+    if (*use_direct) {
+        return run_direct_build();
+    }
+    
     Cmd cmd = {0};
 #ifndef _MSC_VER
     if (*lazer && *legacy)
@@ -198,6 +226,7 @@ int main(int argc, char **argv)
     console = flag_bool("console", false, "use console log at runtime");
     run = flag_bool("run", false, "inject after build / run SSSISANIGGER-ui-demo");
     help = flag_bool("help", false, "print help and exit");
+    use_direct = flag_bool("direct", false, "use direct compiler commands");
 
     if (!flag_parse(argc, argv)) {
         usage(stderr);
@@ -210,7 +239,7 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    if (!*lazer && !*legacy && !*demo) {
+    if (!*lazer && !*legacy && !*demo && !*use_direct) {
 #if defined(_WIN64)
         *lazer = true;
 #elif defined(_WIN32)
